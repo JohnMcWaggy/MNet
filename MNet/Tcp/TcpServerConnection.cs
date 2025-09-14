@@ -1,7 +1,9 @@
-﻿
+﻿using Serilog;
+
 namespace MNet.Tcp;
 
 public sealed class TcpServerConnection : IAsyncDisposable, ITcpSender {
+    private bool _Disposed;
 
     public required Socket Socket { get; init; }
     public required IDuplexPipe DuplexPipe { get; init; }
@@ -9,51 +11,50 @@ public sealed class TcpServerConnection : IAsyncDisposable, ITcpSender {
     public required string UniqueId { get; set; }
     public Stream? Stream { get; init; }
     public bool IsHandshaked { get; set; } = false;
-    public CancellationTokenSource DisconnectToken { get; private set; } = new CancellationTokenSource();
+    public CancellationTokenSource DisconnectToken { get; } = new();
 
-    public Channel<ITcpFrame> OutgoingFramesQueue { get; private set; } = Channel.CreateUnbounded<ITcpFrame>();
+    public Channel<ITcpFrame> OutgoingFramesQueue { get; } = Channel.CreateUnbounded<ITcpFrame>();
 
-    private bool _Disposed = false;
+    public ITcpFramePool FramePool => Server.Options.FramePool;
 
-    public void Send<T>(string identifier, T payload) where T : class {
-
-        if(identifier.StartsWith(TcpConstants.StartSequenceSerialize)) {
-            throw new ArgumentOutOfRangeException("Send identifier invalid.");
+    public async ValueTask DisposeAsync() {
+        if (_Disposed) {
+            return;
         }
 
-        using var frame = Server.Options.FrameFactory.Create(); // dispose is ok here for sending
+        try {
+            if (DuplexPipe is SocketConnection socketConnection) {
+                await socketConnection.DisposeAsync(); // does the socket dispose itself 
+            } else {
+                try {
+                    Socket?.Shutdown(SocketShutdown.Both);
+                } catch (Exception ex) {
+                    Log.Error(ex, "Socket shutdown failed");
+                }
 
-        frame.Identifier = TcpConstants.StartSequenceSerialize + identifier;
+                if (Stream != null) {
+                    await Stream.DisposeAsync();
+                }
 
-        frame.IsRawOnly = false;
-        frame.IsSending = true;
-        
-        frame.Data = Server.Options.Serializer.SerializeAsMemory(payload);
-        OutgoingFramesQueue.Writer.TryWrite(frame);
+                Socket?.Dispose();
+            }
 
-    }
+            OutgoingFramesQueue.Writer.TryComplete();
 
-    public void Send(string identifier, Memory<byte> payload) {
+            if (!DisconnectToken.IsCancellationRequested) {
+                await DisconnectToken.CancelAsync();
+            }
 
-        if (identifier.StartsWith(TcpConstants.StartSequenceSerialize)) {
-            throw new ArgumentOutOfRangeException("Send identifier invalid.");
+            DisconnectToken?.Dispose();
+        } catch (Exception ex) {
+            Log.Error(ex, "Disconnect failed");
         }
 
-        using var frame = Server.Options.FrameFactory.Create(); // dispose is ok here for sending
-
-        frame.Identifier = identifier;
-
-        frame.IsRawOnly = false;
-        frame.IsSending = true;
-
-        frame.Data = payload;
-        OutgoingFramesQueue.Writer.TryWrite(frame);
-
+        _Disposed = true;
     }
 
     public void Send(Memory<byte> payload) {
-
-        using var frame = Server.Options.FrameFactory.Create(); // dispose is ok here for sending
+        var frame = FramePool.Get();
 
         frame.IsRawOnly = true;
         frame.IsSending = true;
@@ -61,58 +62,42 @@ public sealed class TcpServerConnection : IAsyncDisposable, ITcpSender {
         frame.Data = payload;
         OutgoingFramesQueue.Writer.TryWrite(frame);
 
+        FramePool.Return(frame);
     }
 
     void ITcpSender.Send(ITcpFrame frame) {
+        OutgoingFramesQueue.Writer.TryWrite(frame);
+    }
 
+    // TODO: Return a boolean if the send was successful or not
+    public void Send<T>(uint messageType, T payload) where T : class {
+        var frame = FramePool.Get();
+
+        frame.MessageType = messageType;
+        frame.IsRawOnly = false;
+        frame.IsSending = true;
+
+        frame.Data = Server.Options.Serializer.SerializeAsMemory(payload);
         OutgoingFramesQueue.Writer.TryWrite(frame);
 
+        FramePool.Return(frame);
+    }
+
+    // TODO: Return a boolean if the send was successful or not
+    public void Send(uint messageType, Memory<byte> payload) {
+        var frame = FramePool.Get();
+
+        frame.MessageType = messageType;
+        frame.IsRawOnly = false;
+        frame.IsSending = true;
+
+        frame.Data = payload;
+        OutgoingFramesQueue.Writer.TryWrite(frame);
+
+        FramePool.Return(frame);
     }
 
     public void Disconnect() {
-
         DisconnectToken.Cancel();
-
     }
-
-    public async ValueTask DisposeAsync() {
-
-        if(_Disposed) {
-            return;
-        }
-
-        try {
-
-            if(DuplexPipe != null && DuplexPipe is SocketConnection socketConnection) {
-
-                await socketConnection.DisposeAsync(); // does the socket dispose itself 
-
-            } else {
-
-                try {
-
-                    Socket?.Shutdown(SocketShutdown.Both);
-
-                } catch (Exception) {
-                }
-
-                Stream?.Dispose();
-                Socket?.Dispose();
-
-            }
-
-            OutgoingFramesQueue.Writer.TryComplete();
-
-            if(!DisconnectToken.IsCancellationRequested) {
-                DisconnectToken?.Cancel();
-            }
-            DisconnectToken?.Dispose();
-
-        } catch(Exception) {
-        }
-
-        _Disposed = true;
-
-    }
-
 }

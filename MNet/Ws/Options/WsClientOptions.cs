@@ -1,13 +1,8 @@
-﻿
-namespace MNet.Ws.Options;
+﻿namespace MNet.Ws.Options;
 
 public sealed class WsClientOptions : TcpClientOptions {
-
     public WsClientOptions() {
-
         Handshaker = new WsClientHandshaker();
-        FrameFactory = new WsFrameFactory();
-    
+        FramePool = new TcpFramePool(() => new WsFrame());
     }
-
 }
