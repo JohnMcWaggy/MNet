@@ -8,13 +8,10 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
     public delegate void DisconnectHandler();
 
     public TcpClient(TcpClientOptions options) {
-        if (options.IsSecure) {
-            ArgumentNullException.ThrowIfNull(options.Host);
-        }
+        if (options.IsSecure) ArgumentNullException.ThrowIfNull(options.Host);
 
-        if (!IPAddress.TryParse(options.Address, out var address)) {
+        if (!IPAddress.TryParse(options.Address, out var address))
             throw new ArgumentException($"{nameof(options.Address)} is not a valid IP address.");
-        }
 
         Options = options;
         Logger = Options.Logger;
@@ -40,7 +37,7 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
         await Disconnect();
     }
 
-    public void Send<T>(uint messageType, T payload) where T : class {
+    public void Send<T>(uint messageType, T payload) {
         Log.Information("Sending message of type {MessageType} with payload {Payload}", messageType, payload);
         var frame = FramePool.Get();
 
@@ -93,9 +90,7 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
     public event DisconnectHandler? OnDisconnect;
 
     public void Connect() {
-        if (RunTokenSource != null) {
-            return;
-        }
+        if (RunTokenSource != null) return;
 
         Logger.LogDebug("{Source} Connecting the tcp client...", this);
 
@@ -107,27 +102,26 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
     }
 
     public async Task Disconnect() {
-        if (RunTokenSource == null) {
-            return;
-        }
+        if (RunTokenSource == null) return;
 
         Logger.LogDebug("{Source} Disconnecting the tcp client...", this);
 
         IsHandshaked = false;
 
         try {
-            if (RunTokenSource != null) {
-                await RunTokenSource.CancelAsync();
-            }
+            if (RunTokenSource != null) await RunTokenSource.CancelAsync();
 
             RunTokenSource?.Dispose();
-        } catch (Exception ex) {
+        }
+        catch (Exception ex) {
             Log.Error(ex, "Run token cancel failed");
         }
 
         try {
-            if (OutgoingFramesQueue.Writer.TryComplete()) { }
-        } catch (Exception ex) {
+            if (OutgoingFramesQueue.Writer.TryComplete()) {
+            }
+        }
+        catch (Exception ex) {
             Log.Error(ex, "Outgoing frames queue failed");
         }
 
@@ -135,16 +129,16 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
 
         if (DuplexPipe != null && DuplexPipe is SocketConnection conn) {
             await conn.DisposeAsync();
-        } else {
+        }
+        else {
             try {
                 Socket?.Shutdown(SocketShutdown.Both);
-            } catch (Exception ex) {
+            }
+            catch (Exception ex) {
                 Log.Error(ex, "Socket shutdown failed");
             }
 
-            if (Stream != null) {
-                await Stream.DisposeAsync();
-            }
+            if (Stream != null) await Stream.DisposeAsync();
 
             Socket?.Dispose();
         }
@@ -184,7 +178,8 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
 
                 if (ConnectionType == TcpUnderlyingConnectionType.FastSocket) {
                     DuplexPipe = ConnectionFactory.Create(Socket, null);
-                } else {
+                }
+                else {
                     Stream = await GetStream(Socket);
                     DuplexPipe = ConnectionFactory.Create(Socket, Stream);
                 }
@@ -194,7 +189,8 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
 
                 Logger.LogInformation("{Source} Tcp client connected. {Endpoint}", this, EndPoint);
                 return; // exit this connecting loop
-            } catch (Exception ex) {
+            }
+            catch (Exception ex) {
                 Log.Error(ex, "Connect error");
             }
 
@@ -219,13 +215,13 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
 
                 DuplexPipe.Input.AdvanceTo(position);
 
-                if (result.IsCanceled || result.IsCompleted) {
-                    break;
-                }
+                if (result.IsCanceled || result.IsCompleted) break;
             }
-        } catch (Exception ex) {
+        }
+        catch (Exception ex) {
             Log.Error(ex, "{Source} Receive loop error", this);
-        } finally {
+        }
+        finally {
             FramePool.Return(frame);
             await InternalDisconnect();
         }
@@ -234,17 +230,13 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
     private SequencePosition ParseFrame(ref ITcpFrame frame, ref ReadResult result) {
         var buffer = result.Buffer;
 
-        if (buffer.Length == 0) {
-            return buffer.Start;
-        }
+        if (buffer.Length == 0) return buffer.Start;
 
         if (IsHandshaked) {
             var endPosition = frame.Read(ref buffer);
 
             var messageType = frame.MessageType;
-            if (messageType == null) {
-                return endPosition;
-            }
+            if (messageType == null) return endPosition;
 
             EventEmitter.Emit(messageType.Value, frame);
 
@@ -262,34 +254,32 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
             return headerPosition;
         }
 
-        if (buffer.Length > Options.MaxHandshakeSizeBytes) {
+        if (buffer.Length > Options.MaxHandshakeSizeBytes)
             throw new Exception($"Handshake not valid and exceeded {nameof(Options.MaxHandshakeSizeBytes)}.");
-        }
 
         return buffer.End;
     }
 
     private async Task DoSend(CancellationToken token) {
         while (!token.IsCancellationRequested && DuplexPipe != null
-                                              && await OutgoingFramesQueue.Reader.WaitToReadAsync(token)) {
+                                              && await OutgoingFramesQueue.Reader.WaitToReadAsync(token))
             try {
                 var frame = await OutgoingFramesQueue.Reader.ReadAsync(token);
                 Log.Information("Frame: {Frame}", frame);
 
-                if (frame.Data.Length == 0) {
-                    continue;
-                }
+                if (frame.Data.Length == 0) continue;
 
                 if (frame.IsRawOnly) {
                     await DuplexPipe.Output.WriteAsync(frame.Data, token); // flushes automatically
-                } else {
+                }
+                else {
                     SendFrame(frame);
                     await DuplexPipe.Output.FlushAsync(token); // not flushed inside frame
                 }
-            } catch (Exception ex) {
+            }
+            catch (Exception ex) {
                 Log.Error(ex, "Send frame error");
             }
-        }
     }
 
     private void SendFrame(ITcpFrame frame) {
@@ -300,7 +290,8 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
             frame.Write(ref span);
 
             DuplexPipe!.Output.Write(span);
-        } else {
+        }
+        else {
             using var memoryOwner = MemoryPool<byte>.Shared.Rent(binarySize); // gives back memory at end of scope
             var span = memoryOwner.Memory.Span[..binarySize]; // rent memory can be bigger, clamp it
 
@@ -317,12 +308,12 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
             Logger.LogDebug("{Source} Underlying connection type overwritten, initialising with: {Type}", this,
                 Options.ConnectionType);
             type = Options.ConnectionType;
-        } else {
-            if (Options.IsSecure) {
+        }
+        else {
+            if (Options.IsSecure)
                 type = TcpUnderlyingConnectionType.SslStream;
-            } else {
+            else
                 type = TcpUnderlyingConnectionType.FastSocket;
-            }
 
             Logger.LogDebug("{Source} Underlying connection type chosen automatically: {Type}", this, type);
         }
@@ -351,9 +342,7 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
     private async Task<Stream?> GetStream(Socket socket) {
         NetworkStream stream = new(socket);
 
-        if (ConnectionType == TcpUnderlyingConnectionType.NetworkStream) {
-            return stream;
-        }
+        if (ConnectionType == TcpUnderlyingConnectionType.NetworkStream) return stream;
 
         SslStream? sslStream = null;
 
@@ -364,14 +353,11 @@ public class TcpClient : TcpBase, IAsyncDisposable, ITcpSender {
             await task.WaitAsync(TimeSpan.FromSeconds(60));
 
             return sslStream;
-        } catch (Exception err) {
-            if (sslStream != null) {
-                await sslStream.DisposeAsync();
-            }
+        }
+        catch (Exception err) {
+            if (sslStream != null) await sslStream.DisposeAsync();
 
-            if (err is TimeoutException) {
-                Logger.LogDebug("{Source} Ssl handshake timeouted.", this);
-            }
+            if (err is TimeoutException) Logger.LogDebug("{Source} Ssl handshake timeouted.", this);
 
             Logger.LogDebug("{Source} Certification fail get stream. {Error}", this, err);
             return null;

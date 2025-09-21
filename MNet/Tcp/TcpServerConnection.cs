@@ -17,36 +17,38 @@ public sealed class TcpServerConnection : IAsyncDisposable, ITcpSender {
 
     public ITcpFramePool FramePool => Server.Options.FramePool;
 
+    /// <summary>
+    ///     Store arbitrary data related to this connection
+    /// </summary>
+    public object? Data { get; set; }
+
     public async ValueTask DisposeAsync() {
-        if (_Disposed) {
-            return;
-        }
+        if (_Disposed) return;
 
         try {
             if (DuplexPipe is SocketConnection socketConnection) {
                 await socketConnection.DisposeAsync(); // does the socket dispose itself 
-            } else {
+            }
+            else {
                 try {
                     Socket?.Shutdown(SocketShutdown.Both);
-                } catch (Exception ex) {
+                }
+                catch (Exception ex) {
                     Log.Error(ex, "Socket shutdown failed");
                 }
 
-                if (Stream != null) {
-                    await Stream.DisposeAsync();
-                }
+                if (Stream != null) await Stream.DisposeAsync();
 
                 Socket?.Dispose();
             }
 
             OutgoingFramesQueue.Writer.TryComplete();
 
-            if (!DisconnectToken.IsCancellationRequested) {
-                await DisconnectToken.CancelAsync();
-            }
+            if (!DisconnectToken.IsCancellationRequested) await DisconnectToken.CancelAsync();
 
             DisconnectToken?.Dispose();
-        } catch (Exception ex) {
+        }
+        catch (Exception ex) {
             Log.Error(ex, "Disconnect failed");
         }
 
@@ -70,7 +72,7 @@ public sealed class TcpServerConnection : IAsyncDisposable, ITcpSender {
     }
 
     // TODO: Return a boolean if the send was successful or not
-    public void Send<T>(uint messageType, T payload) where T : class {
+    public void Send<T>(uint messageType, T payload) {
         var frame = FramePool.Get();
 
         frame.MessageType = messageType;
