@@ -1,4 +1,5 @@
 ﻿using System.Linq.Expressions;
+using Serilog;
 
 namespace MNet.Helpers;
 
@@ -21,13 +22,18 @@ public sealed class EventEmitter(ITcpSerializer serializer) {
             throw new Exception("Invalid parameter length.");
         }
 
+        Log.Debug("Registering handler for message type {MessageType} with parameters: {Parameters}",
+            messageType,
+            string.Join(", ", callbackParameters.Select(p => p.ParameterType.Name)));
+
         var isSerialize = true;
         if (callbackParameters[0].ParameterType == typeof(ReadOnlyMemory<byte>)) {
             isSerialize = false;
-        } else {
-            ArgumentOutOfRangeException.ThrowIfNotEqual(callbackParameters[0].ParameterType.IsClass, true,
-                "First parameter wrong type.");
         }
+        // else {
+        //     ArgumentOutOfRangeException.ThrowIfNotEqual(callbackParameters[0].ParameterType.IsClass, true,
+        //         "First parameter wrong type.");
+        // }
 
         var isServerCallback = false;
         var typeServerConnection = typeof(TcpServerConnection);
@@ -76,7 +82,8 @@ public sealed class EventEmitter(ITcpSerializer serializer) {
                 (callbackCall, paraFrame, parameters[1]).Compile();
 
             _HandlersServer.TryAdd(messageType, action);
-        } else {
+        }
+        else {
             var callbackCall = targetObject != null
                 ? Expression.Call(Expression.Constant(targetObject), callbackInfo, resultFirstCall)
                 : Expression.Call(callbackInfo, resultFirstCall);
